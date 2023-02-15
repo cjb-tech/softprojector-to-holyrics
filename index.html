@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+  <meta charset="UTF-8">
+  <title>SoftProjector -> Holyrics</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.0.2/css/bootstrap.min.css">
+</head>
+
+<body translate="no">
+<div class="container">
+  <div class="row">
+    <div class="col-12 pt-3">
+      <h1>
+        SoftProjector -> Holyrics
+      </h1>
+      <details class="mb-3 pt-3">
+        <summary>Инструкция</summary>
+        <p>
+          Экспортируй песенник в файл. Затем загрузи .sps-файл сюда.
+        </p>
+        <p>
+          Полученый архив распакуй и импортируй через пункт
+          <i>Песни</i> ->
+          <i>Импортировать</i> ->
+          <i>Другое</i> ->
+          <i>TXT File (UTF-8)</i>
+        </p>
+        <p>
+          <img src="screenshot_holyrics-import.png" class="mw-100 rounded shadow-sm">
+        </p>
+      </details>
+      
+      <p class="alert alert-secondary">
+        Файл обрабатывается локально в браузере. Никакие данные не отправляются на сервер.
+      </p>
+      
+      <input type="file" accept=".sps" class="form-control mb-3 js-file">
+      
+      <div class="js-loader d-none">
+        <span class="spinner-border"></span>
+      </div>
+      
+      <div class="js-process d-none">
+        <p>
+          Найдено <b class="js-processed-count">0</b> песен.
+        </p>
+        <p>
+          <a class="btn btn-primary w-100 js-download">
+            Скачать архив
+          </a>
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script>
+  const fileInput = document.querySelector(".js-file");
+  const loaderContainer = document.querySelector(".js-loader");
+  const processContainer = document.querySelector(".js-process");
+  const countContainer = document.querySelector(".js-processed-count");
+  const downloadButton = document.querySelector(".js-download");
+  
+  const blockKeywords = ["Verse", "Verse", "Куплет", "Strophe", "Verš", "Chorus", "Chorus", "Sbor", "Refrain", "Refrain", "Припев", "Приспів", "Refrén", "Slide", "Insert", "Intro", "Ending", "Слайд", "Вставка", "Вступление", "Окончание", "Закінчення", "Dia", "Einfügung", "Einleitung", "Ende", "Snímek", "Vložka", "Úvod", "Závěr", "Announce", "Slide", "Объявление", "Оголошення", "Ankündigung", "Oznámení"];
+  
+  const getFileContentAsString = (file) =>
+    new Promise((resolve, _) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.readAsText(file);
+    });
+  const getFileContentAsUint = (file) =>
+    new Promise((resolve, _) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(new Uint8Array(reader.result));
+      reader.readAsArrayBuffer(file);
+    });
+  
+  const sanitizeAndTransformSongText = text => {
+    return text.split("\n")
+      .map((row) => row.trim())
+      .join("\n")
+      .replace(/\n +/g, "\n")
+      .replace(new RegExp(`(^|\n)((${blockKeywords.join("|")})[^\n]*)`, "ig"), "$1##($2)")
+      .replace(/\n{2,}/g, "\n\n")
+      .replace(/^\n+/g, "")
+      .replace(/ +/g, " ")
+      .replace(/ +/g, " ")
+      .replace(/^ */g, "")
+      .replace(/\n */g, "\n")
+      .replace(/ *\n/g, "\n")
+      .replace(/^d+. */g, "")
+      .replace(/\nd+. */g, "\n");
+  };
+  
+  const handleFileSelect = async () => {
+    const file = fileInput.files[0];
+    if (!file) {
+      return;
+    }
+    
+    loaderContainer.classList.remove("d-none");
+    const fileContent = await getFileContentAsString(file);
+    let songs = [];
+    if (fileContent.indexOf("SQLite format 3") === 0) {
+      // sqlite backup or database
+      const fileBytes = await getFileContentAsUint(file);
+      songs = await parseSQLiteFile(fileBytes);
+      
+    } else if (fileContent.indexOf("##") === 0) {
+      songs = await parsePlaintextFile(fileContent);
+      // softprojector v1 text backup
+      
+    } else {
+      alert("Не удалось распознать файл");
+      loaderContainer.classList.add("d-none");
+    }
+    
+    debugger;
+    // return;
+    // debugger;
+    countContainer.innerText = songs.length;
+    if (songs.length) {
+      const zip = new JSZip();
+      for (const song of songs) {
+        const firstRow = (
+          song.text
+            .split("\n")
+            .filter((row) => !row.includes("#") && row.length > 5)
+            .shift() || ""
+        ).replace(/[.,!?-]$/g, "");
+        const fileName = `${song.songbook}/${song.title}${firstRow ? ` (${firstRow})` : ""}.txt`;
+        zip.file(fileName, song.text);
+      }
+      const zipBlob = await zip.generateAsync({ type: "blob" });
+      downloadButton.classList.remove("disabled");
+      downloadButton.href = URL.createObjectURL(zipBlob);
+      downloadButton.download = `${file.name.replace(/\.[a-z]+$/i, "").replace(/\s/ig, "_")}_SoftProjector2Holyrics_${Date.now()}.zip`;
+    } else {
+      downloadButton.classList.add("disabled");
+    }
+    
+    processContainer.classList.remove("d-none");
+    loaderContainer.classList.add("d-none");
+  };
+  fileInput.addEventListener("change", handleFileSelect);
+  
+  const parseSQLiteFile = async fileContentBytes => {
+    const SQL = await initSqlJs({
+      locateFile: filename => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${filename}`,
+    });
+    const db = new SQL.Database(fileContentBytes);
+    const beautifyDatabaseResult = ({ columns, values }) => {
+      return values.map(value => Object.fromEntries(columns.map((key, index) => [key, value[index]])));
+    };
+    const query = query => beautifyDatabaseResult(db.exec(query)[0]);
+    
+    const tables = query(`SELECT name
+                          FROM sqlite_master
+                          WHERE type = 'table';`)
+      .map(row => row.name);
+    
+    if (tables.includes("SongBook")) {
+      // Table has 'SongBook' table. This is SoftProjector v2 export file
+      return query(`SELECT "Songs".*, "SongBook"."title" as "songbook_name"
+                    FROM "Songs"
+                           LEFT JOIN "SongBook" on "SongBook"."_rowid_" = 1
+                    ORDER BY "_rowid_"`)
+        .map(song => {
+          const text = sanitizeAndTransformSongText(song.song_text || "");
+          return {
+            number: song.number || null,
+            title: song.title,
+            songbook: song.songbook_name.trim() || null,
+            key: song.tune || null,
+            wordsBy: song.words || null,
+            musicBy: song.music || null,
+            notes: song.notes || null,
+            text: text,
+          };
+        });
+    }
+    
+    // const songbookNamesById = Object.fromEntries(
+    //   query(`SELECT "_rowid_", *
+    //          FROM "${tables.includes("SongBook") ? "SongBook" : "Songbooks"}"
+    //          ORDER BY "_rowid_"`)
+    //     .map(songbook => [songbook.id, songbook.name]));
+    // if (tables.includes("SongLink")) {
+    // console.log("Table has 'SongLink' table. This is SoftProjector v1 database");
+    // query(`SELECT "Songs".*, "Songbooks"."name" as "songbook_name", "SongLink"."song_number" as "song_number"
+    //        FROM "Songs"
+    //               LEFT JOIN "SongLink" on "SongLink"."song_id" = "Songs"."id"
+    //               LEFT JOIN "Songbooks" on "SongLink"."songbook_id" = "Songbooks"."id"
+    //        ORDER BY "_rowid_"`)
+    //   .forEach(song => {
+    //     songsToBeSaved.push(song);
+    //   });
+    // } else
+    return [];
+  };
+  
+  const parsePlaintextFile = async fileContentString => {
+    const fileRows = fileContentString.split("\n");
+    fileRows.shift(); // songbook number
+    const songbook = fileRows.shift().substring(2);
+    fileRows.shift(); // songbook description
+    
+    return fileRows.map(row => {
+      const [number, title, _categoryId, key, wordsBy, musicBy, textCompressed] = row.split("#$#");
+      const textUncompressed = textCompressed.replace(/@%/ig, "\n").replace(/@\$/ig, "\n\n");
+      const text = sanitizeAndTransformSongText(textUncompressed || "");
+      
+      return {
+        number: number || null,
+        title: title,
+        songbook: songbook || null,
+        key: key || null,
+        wordsBy: wordsBy || null,
+        musicBy: musicBy || null,
+        notes: null,
+        text: text,
+      };
+    }).filter(Boolean);
+  };
+</script>
+</body>
+
+</html>
+
