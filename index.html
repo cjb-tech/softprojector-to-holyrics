@@ -102,6 +102,7 @@
     }
     
     loaderContainer.classList.remove("d-none");
+    processContainer.classList.add("d-none");
     const fileContent = await getFileContentAsString(file);
     let songs = [];
     if (fileContent.indexOf("SQLite format 3") === 0) {
@@ -118,9 +119,6 @@
       loaderContainer.classList.add("d-none");
     }
     
-    debugger;
-    // return;
-    // debugger;
     countContainer.innerText = songs.length;
     if (songs.length) {
       const zip = new JSZip();
@@ -130,8 +128,9 @@
             .split("\n")
             .filter((row) => !row.includes("#") && row.length > 5)
             .shift() || ""
-        ).replace(/[.,!?-]$/g, "");
-        const fileName = `${song.songbook}/${song.title}${firstRow ? ` (${firstRow})` : ""}.txt`;
+        ).replace(/[.,!?-]$/g, "").trim();
+        const useFirstRow = firstRow && firstRow.toLowerCase().trim() !== song.title.toLowerCase().trim();
+        const fileName = `${song.songbook}/${song.title}${useFirstRow ? ` (${firstRow})` : ""}.txt`;
         zip.file(fileName, song.text);
       }
       const zipBlob = await zip.generateAsync({ type: "blob" });
